@@ -3,7 +3,7 @@
 基于阿瓦隆（The Resistance: Avalon）桌游的多轮博弈仿真与实时对战平台，支持两种运行模式：
 
 - **模式一：LLM vs LLM 自动仿真** — 全自动多轮实验，用于评估不同大模型在社交推理场景下的博弈能力
-- **模式二：Human vs LLM 实时对战** — 通过 Streamlit Web 界面，人类玩家与 LLM 在同一局中实时对战，实现图灵测试级别的双盲评估
+- **模式二：Human Team vs AI Team 阵营对抗** — 人类小队 vs AI 小队，选择阵营后一键开局，座位和角色每局随机分配
 
 ---
 
@@ -99,7 +99,7 @@ python run_simulation_avalon.py \
 
 ---
 
-## 模式二：Human vs LLM 实时对战
+## 模式二：Human Team vs AI Team 阵营对抗
 
 ### 架构概述
 
@@ -130,7 +130,7 @@ python run_simulation_avalon.py \
 | `shared_state.py` | SQLite 共享状态管理器，封装房间、玩家、待处理动作、事件流的 CRUD 和阻塞等待 |
 | `Agents/Agent_Streamlit_Human.py` | 继承 `Agent` 基类，`act()` 中将 prompt 写入 SQLite 并阻塞等待人类回复 |
 | `Game/Avalon_Streamlit_Engine.py` | 继承 `Game_Avalon_Multiturn`，覆盖 `_broadcast()` 写入事件流，覆盖 `save_log()` 重定向日志 |
-| `app.py` | Streamlit 主应用，包含登录大厅、Host 配置面板、玩家游戏界面三个视图 |
+| `app.py` | Streamlit 主应用，包含登录大厅、Host 阵营配置面板、玩家游戏界面三个视图 |
 | `run_human_llm.py` | 启动脚本：写入模型配置、重置数据库、启动 Streamlit 服务 |
 | `requirements.txt` | Python 依赖声明 |
 
@@ -171,7 +171,7 @@ python run_human_llm.py --port 8501
 
 1. 在浏览器中打开 `http://<服务器IP>:8501`
 2. 输入昵称，勾选"创建新房间"，点击"确认加入"
-3. 进入 Host 配置面板后，记下屏幕上显示的**房间号**
+3. 进入 Host 阵营配置面板后，记下屏幕上显示的**房间号**
 
 #### 第 4 步：其他人类玩家加入
 
@@ -179,17 +179,17 @@ python run_human_llm.py --port 8501
 2. 输入昵称和房间号，点击"确认加入"
 3. 进入等待界面
 
-#### 第 5 步：配置座位
+#### 第 5 步：配置阵营
 
 在 Host 配置面板中：
-- 7 个座位分别选择"人类玩家"或"LLM 模型"
-- 人类玩家从已连接的玩家列表中选择
-- LLM 模型从预配置列表中选择
-- 房间主可以勾选"也作为玩家参与游戏"
+- 选择人类阵营：**Good**（需 4 名人类玩家）或 **Evil**（需 3 名人类玩家）
+- 选择驱动敌对阵营的 LLM 模型
+- 房间主默认参与游戏（可取消勾选改为观战）
+- 等待人数满足后即可开始
 
-#### 第 6 步：开始游戏
+#### 第 6 步：一键开始游戏
 
-点击"开始游戏"按钮。角色（Merlin, Percival, Loyal Servant x2, Morgana, Assassin, Oberon）会被**随机分配**到 7 个座位。
+点击"随机分配座位并开始游戏"按钮。座位号 1-7 全局随机打乱，角色在各自阵营内随机分配。每局的人机位置和具体角色都不同。
 
 #### 第 7 步：游戏进行中
 
@@ -212,8 +212,13 @@ python run_human_llm.py --port 8501
 
 - **Prompt 一致性**：人类玩家看到的指令文本与 LLM 收到的 Prompt 完全一致（`Agent_Streamlit_Human` 继承了 `Agent` 的 `_construct_instruction()` 方法）
 - **观测一致性**：所有玩家通过相同的 `_broadcast()` 机制接收公共信息
-- **随机 ID 映射**：座位号 1-7 随机分配，人类玩家无法从编号判断其他玩家是人还是 LLM
+- **随机 ID 映射**：座位号 1-7 每局全局随机打乱，人类玩家无法从编号判断其他玩家是人还是 LLM
+- **阵营锁定**：人类玩家统一分配到选定阵营，LLM 统一分配到对方阵营，阵营内角色随机
 - **完全隔离的会话**：每个 Streamlit 标签页只能看到属于自己的信息
+
+### 一键重开新局
+
+游戏结束后，房主可点击"重新开启新一局"按钮，系统会清空本局所有数据（事件、待处理动作、座位分配），将房间重置为等待状态。所有玩家页面自动回到大厅，无需重新加入房间，即可开启下一局。
 
 ### Human vs LLM 日志
 
@@ -257,4 +262,5 @@ python run_human_llm.py --port 8501
 2. **LLM 超时**：人类玩家的操作超时默认为 600 秒（10 分钟），LLM 调用超时取决于 OpenAI client 的配置
 3. **多人连接**：Streamlit 天然支持多人同时访问，每个浏览器标签页是独立会话
 4. **数据库重置**：每次运行 `run_human_llm.py` 会自动清空之前的游戏数据。如需保留，请备份 `game_shared_state.db`
-5. **原有代码不受影响**：所有新增文件通过继承实现，`run_simulation_avalon.py` 和 `run_avalon.sh` 仍可独立使用
+5. **局内重开**：游戏结束后房主可一键重开新局，无需重启服务或重新加入房间
+6. **原有代码不受影响**：所有新增文件通过继承实现，`run_simulation_avalon.py` 和 `run_avalon.sh` 仍可独立使用

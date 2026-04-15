@@ -1,9 +1,9 @@
 """
 Avalon Human-in-the-Loop Streamlit Application.
 
-Three views:
+Human Team vs AI Team faction mode:
   1. Login & Lobby   – enter nickname, create/join room
-  2. Host Dashboard  – configure 7 seats (human / LLM), start game
+  2. Host Dashboard  – pick human faction, choose LLM opponent, one-click start
   3. Player Game UI  – see game events, submit decisions when prompted
 """
 
@@ -66,7 +66,7 @@ def get_shared_state():
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Avalon – Human vs LLM", page_icon="🏰", layout="wide")
+st.set_page_config(page_title="Avalon – Human Team vs AI Team", page_icon="🏰", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Session state defaults
@@ -170,7 +170,7 @@ st.markdown("""
 # =========================================================================== #
 
 def view_login():
-    st.title("🏰 Avalon – Human vs LLM")
+    st.title("🏰 Avalon – 人类小队 vs AI 小队")
     st.markdown("---")
 
     col1, col2 = st.columns(2)
@@ -225,7 +225,8 @@ def view_login():
         - 好人目标：完成 3 次任务
         - 坏人目标：破坏 3 次任务，或在好人获胜后刺杀 Merlin
 
-        房间主创建房间后，可以为 7 个座位分配人类玩家或 LLM 模型。
+        **人类小队 vs AI 小队**：房间主选择人类阵营（好人或坏人），
+        其余座位由 LLM 模型扮演对方阵营。座位号和角色每局随机分配。
         """)
 
 
@@ -263,8 +264,77 @@ def view_lobby_wait():
 #  VIEW 2: HOST DASHBOARD
 # =========================================================================== #
 
+def _start_faction_game(human_players, human_faction_choice, llm_model, host_as_player):
+    """Core logic: assign random seats & roles, then launch the engine thread."""
+    good_roles = ["Merlin", "Percival", "Loyal Servant", "Loyal Servant"]
+    evil_roles = ["Morgana", "Assassin", "Oberon"]
+
+    is_human_good = human_faction_choice.startswith("Good")
+    human_roles = good_roles.copy() if is_human_good else evil_roles.copy()
+    llm_roles = evil_roles.copy() if is_human_good else good_roles.copy()
+    human_faction_str = "Good" if is_human_good else "Evil"
+    llm_faction_str = "Evil" if is_human_good else "Good"
+
+    random.shuffle(human_roles)
+    random.shuffle(llm_roles)
+
+    seats = list(range(1, 8))
+    random.shuffle(seats)
+
+    seat_config = {}
+
+    for i, p in enumerate(human_players):
+        seat_num = seats[i]
+        role = human_roles[i]
+        seat_config[seat_num] = {
+            "type": "human",
+            "nickname": p["nickname"],
+            "role": role,
+            "faction": human_faction_str,
+        }
+        shared.assign_seat(
+            st.session_state.room_id,
+            p["session_id"],
+            seat_num,
+            role=role,
+            faction=human_faction_str,
+        )
+
+    for i in range(len(human_players), 7):
+        seat_num = seats[i]
+        role = llm_roles[i - len(human_players)]
+        faction = llm_faction_str
+        seat_config[seat_num] = {
+            "type": "llm",
+            "model_key": llm_model,
+            "role": role,
+            "faction": faction,
+        }
+
+    shared.set_room_config(
+        st.session_state.room_id,
+        json.dumps(seat_config, ensure_ascii=False),
+        json.dumps({str(k): v for k, v in seat_config.items()}, ensure_ascii=False),
+    )
+
+    old_thread = _game_threads.get(st.session_state.room_id)
+    if old_thread and old_thread.is_alive():
+        pass
+    start_game(st.session_state.room_id, seat_config, MODEL_CONFIGS)
+
+    if host_as_player:
+        host_player = shared.get_player_by_session(st.session_state.session_id)
+        if host_player and host_player["seat_number"] > 0:
+            st.session_state.seat_number = host_player["seat_number"]
+            st.session_state.view = "game"
+        else:
+            st.session_state.view = "host_observe"
+    else:
+        st.session_state.view = "host_observe"
+
+
 def view_host():
-    st.title("👑 房间主控制台")
+    st.title("👑 房间主控制台：人类 vs AI 阵营对抗")
     st.info(f"房间号: **{st.session_state.room_id}** — 将此房间号分享给其他玩家")
 
     room = shared.get_room(st.session_state.room_id)
@@ -273,113 +343,39 @@ def view_host():
         st.rerun()
 
     players = shared.get_players(st.session_state.room_id)
-    human_players = [p for p in players if not p["is_host"]]
 
-    st.markdown("### 已连接的人类玩家")
-    if human_players:
-        for p in human_players:
-            st.write(f"- {p['nickname']}")
-    else:
-        st.write("暂无其他玩家加入")
-
-    st.markdown("---")
-    st.markdown("### 座位配置 (7 人局)")
-    st.caption("为每个座位指定人类玩家或 LLM 模型。角色将在开始后随机分配。")
-
-    model_names = list(MODEL_CONFIGS.keys()) if MODEL_CONFIGS else ["(无可用模型)"]
-    human_nicknames = [p["nickname"] for p in human_players]
-    type_options = ["LLM 模型"] + [f"人类: {n}" for n in human_nicknames]
-    if not human_nicknames:
-        type_options = ["LLM 模型"]
-
-    host_as_player = st.checkbox("房间主也作为玩家参与游戏", value=False)
+    host_as_player = st.checkbox("房间主也作为玩家参与游戏", value=True)
     if host_as_player:
-        type_options.append(f"人类: {st.session_state.nickname} (Host)")
+        human_players = players
+    else:
+        human_players = [p for p in players if not p["is_host"]]
 
-    seat_assignments = {}
-    cols = st.columns(4)
-    for seat_idx in range(7):
-        col = cols[seat_idx % 4]
-        with col:
-            st.markdown(f"**座位 {seat_idx + 1}**")
-            seat_type = st.selectbox(
-                "类型", type_options,
-                key=f"seat_type_{seat_idx}",
-                label_visibility="collapsed",
-            )
-            if seat_type == "LLM 模型":
-                if MODEL_CONFIGS:
-                    model_key = st.selectbox(
-                        "模型", model_names,
-                        key=f"seat_model_{seat_idx}",
-                        label_visibility="collapsed",
-                    )
-                else:
-                    model_key = None
-                    st.warning("无模型配置")
-                seat_assignments[seat_idx + 1] = {"type": "llm", "model_key": model_key}
-            else:
-                nick = seat_type.replace("人类: ", "").replace(" (Host)", "")
-                seat_assignments[seat_idx + 1] = {"type": "human", "nickname": nick}
+    st.markdown("### 1. 阵营与人数配置")
+    human_faction = st.radio(
+        "选择人类玩家扮演的阵营：",
+        ["Good (好人阵营，需要 4 名人类玩家)", "Evil (坏人阵营，需要 3 名人类玩家)"],
+    )
+
+    target_human_count = 4 if human_faction.startswith("Good") else 3
+    current_human_count = len(human_players)
+
+    st.write(f"当前已就绪人类玩家：**{current_human_count} / {target_human_count}**")
+    for p in human_players:
+        tag = " 👑" if p["is_host"] else ""
+        st.write(f"- {p['nickname']}{tag}")
+
+    st.markdown("### 2. 对抗大模型配置")
+    model_names = list(MODEL_CONFIGS.keys()) if MODEL_CONFIGS else ["(无可用模型)"]
+    llm_model = st.selectbox("选择驱动敌对阵营的 LLM 模型：", model_names)
 
     st.markdown("---")
 
-    if st.button("🚀 开始游戏", type="primary", use_container_width=True):
-        human_seats = [s for s, v in seat_assignments.items() if v["type"] == "human"]
-        llm_seats = [s for s, v in seat_assignments.items() if v["type"] == "llm"]
+    can_start = (current_human_count == target_human_count) and bool(MODEL_CONFIGS)
+    if not MODEL_CONFIGS:
+        st.warning("未配置任何 LLM 模型，请先在 model_configs.json 中添加模型配置")
 
-        if not MODEL_CONFIGS and llm_seats:
-            st.error("未配置任何 LLM 模型，请先在 model_configs.json 中添加模型配置")
-            return
-
-        used_nicknames = [seat_assignments[s]["nickname"] for s in human_seats]
-        if len(used_nicknames) != len(set(used_nicknames)):
-            st.error("同一个人类玩家不能占据多个座位")
-            return
-
-        roles = ROLES_7P.copy()
-        random.shuffle(roles)
-
-        seat_config = {}
-        for seat_num in range(1, 8):
-            assignment = seat_assignments[seat_num]
-            role = roles[seat_num - 1]
-            faction = "Good" if role in GOOD_ROLES else "Evil"
-            entry = {**assignment, "role": role, "faction": faction}
-            seat_config[seat_num] = entry
-
-        for seat_num, cfg in seat_config.items():
-            if cfg["type"] == "human":
-                nick = cfg["nickname"]
-                matched = None
-                for p in players:
-                    if p["nickname"] == nick:
-                        matched = p
-                        break
-                if matched:
-                    shared.assign_seat(
-                        st.session_state.room_id,
-                        matched["session_id"],
-                        seat_num,
-                        role=cfg["role"],
-                        faction=cfg["faction"],
-                    )
-
-        shared.set_room_config(
-            st.session_state.room_id,
-            json.dumps(seat_config, ensure_ascii=False),
-            json.dumps({str(k): v for k, v in seat_config.items()}, ensure_ascii=False),
-        )
-
-        start_game(st.session_state.room_id, seat_config, MODEL_CONFIGS)
-
-        host_player = shared.get_player_by_session(st.session_state.session_id)
-        if host_player and host_player["seat_number"] > 0:
-            st.session_state.seat_number = host_player["seat_number"]
-            st.session_state.view = "game"
-        else:
-            st.session_state.view = "host_observe"
-
+    if st.button("🚀 随机分配座位并开始游戏", type="primary", use_container_width=True, disabled=not can_start):
+        _start_faction_game(human_players, human_faction, llm_model, host_as_player)
         time.sleep(1)
         st.rerun()
 
@@ -398,12 +394,21 @@ def view_host_observe():
         st.error("房间不存在")
         return
 
+    if room["status"] == "waiting":
+        st.session_state.view = "host"
+        st.rerun()
+        return
+
     status = room["status"]
     st.info(f"房间: {st.session_state.room_id} | 状态: {status}")
 
     if status == "finished":
         st.success("🎉 游戏已结束！请查看 logs/Avalon/human_vs_LLM/ 目录获取完整日志。")
-        if st.button("返回大厅"):
+        if st.button("🔄 重新开启新一局", type="primary"):
+            shared.reset_room(st.session_state.room_id)
+            st.session_state.view = "host"
+            st.rerun()
+        if st.button("退出房间返回大厅"):
             st.session_state.view = "login"
             st.rerun()
         return
@@ -423,6 +428,14 @@ def view_game():
     room = shared.get_room(st.session_state.room_id)
     if not room:
         st.error("房间不存在")
+        return
+
+    if room["status"] == "waiting":
+        if st.session_state.is_host:
+            st.session_state.view = "host"
+        else:
+            st.session_state.view = "lobby_wait"
+        st.rerun()
         return
 
     player = shared.get_player_by_session(st.session_state.session_id)
@@ -451,7 +464,17 @@ def view_game():
     if status == "finished":
         st.success("🎉 游戏已结束！")
         _render_events(seat)
-        if st.button("返回大厅"):
+
+        st.markdown("---")
+        if st.session_state.is_host:
+            if st.button("🔄 重新开启新一局", type="primary"):
+                shared.reset_room(st.session_state.room_id)
+                st.session_state.view = "host"
+                st.rerun()
+        else:
+            st.info("⏳ 等待房主开启新一局...")
+
+        if st.button("退出房间返回大厅"):
             st.session_state.view = "login"
             st.rerun()
         return
@@ -539,6 +562,12 @@ def _form_speech(action_id, prompt_text):
             return
         response = json.dumps({"statement": statement.strip()}, ensure_ascii=False)
         shared.submit_response(action_id, response)
+        shared.push_event(
+            st.session_state.room_id,
+            st.session_state.seat_number,
+            "self_action",
+            f'<span style="color:#0056b3;"><b>💬 你的发言：</b> {statement.strip()}</span>',
+        )
         st.success("发言已提交！")
         time.sleep(1)
         st.rerun()
@@ -561,6 +590,13 @@ def _form_proposal(action_id, team_size):
             return
         response = json.dumps({"team": sorted(selected)})
         shared.submit_response(action_id, response)
+        team_str = ", ".join(f"Player {p}" for p in sorted(selected))
+        shared.push_event(
+            st.session_state.room_id,
+            st.session_state.seat_number,
+            "self_action",
+            f'<span style="color:#0056b3;"><b>👥 你提出了队伍：</b> {team_str}</span>',
+        )
         st.success("队伍已提交！")
         time.sleep(1)
         st.rerun()
@@ -578,6 +614,13 @@ def _form_voting(action_id):
         v = vote.startswith("✅")
         response = json.dumps({"vote": v})
         shared.submit_response(action_id, response)
+        vote_text = "同意 ✅" if v else "反对 ❌"
+        shared.push_event(
+            st.session_state.room_id,
+            st.session_state.seat_number,
+            "self_action",
+            f'<span style="color:#0056b3;"><b>🗳️ 你的投票：</b> {vote_text}</span>',
+        )
         st.success("投票已提交！")
         time.sleep(1)
         st.rerun()
@@ -591,6 +634,12 @@ def _form_execution(action_id, role, faction):
         if st.button("✅ 任务成功 (Success)", type="primary", key="submit_execution"):
             response = json.dumps({"success": True})
             shared.submit_response(action_id, response)
+            shared.push_event(
+                st.session_state.room_id,
+                st.session_state.seat_number,
+                "self_action",
+                '<span style="color:#0056b3;"><b>⚔️ 你的任务执行：</b> 成功 ✅</span>',
+            )
             st.success("已提交：任务成功")
             time.sleep(1)
             st.rerun()
@@ -605,6 +654,13 @@ def _form_execution(action_id, role, faction):
             success = choice.startswith("✅")
             response = json.dumps({"success": success})
             shared.submit_response(action_id, response)
+            exec_text = "成功 ✅" if success else "失败 ❌"
+            shared.push_event(
+                st.session_state.room_id,
+                st.session_state.seat_number,
+                "self_action",
+                f'<span style="color:#0056b3;"><b>⚔️ 你的任务执行：</b> {exec_text}</span>',
+            )
             st.success("已提交！")
             time.sleep(1)
             st.rerun()
@@ -623,6 +679,12 @@ def _form_assassination(action_id):
     if st.button("🗡️ 确认刺杀", type="primary", key="submit_assassination"):
         response = json.dumps({"target": target})
         shared.submit_response(action_id, response)
+        shared.push_event(
+            st.session_state.room_id,
+            st.session_state.seat_number,
+            "self_action",
+            f'<span style="color:#0056b3;"><b>🗡️ 你选择刺杀：</b> Player {target}</span>',
+        )
         st.success("刺杀指令已发出！")
         time.sleep(1)
         st.rerun()
