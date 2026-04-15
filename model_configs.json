@@ -1,0 +1,38 @@
+{
+  "Qwen3-32B": {
+    "name": "Qwen3-32B",
+    "api_url_config": {
+      "api_key": "EMPTY",
+      "base_url": "http://172.18.30.165:8815/v1"
+    },
+    "inference_config": {
+      "model": "Qwen3-32B",
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "max_tokens": 8192,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "avalon_sft_1_7B_CoT-FLAT": {
+    "name": "avalon_sft_1_7B_CoT-FLAT",
+    "api_url_config": {
+      "api_key": "EMPTY",
+      "base_url": "http://172.18.39.164:8002/v1"
+    },
+    "inference_config": {
+      "model": "avalon_sft_1_7B_CoT-FLAT",
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "max_tokens": 8192,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  }
+}
