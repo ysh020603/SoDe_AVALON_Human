@@ -49,4 +49,24 @@ class Game_Avalon_Streamlit(Game_Avalon_Multiturn):
     def run_game(self):
         if self.shared_state and self.room_id:
             self.shared_state.update_room_status(self.room_id, "playing")
+            self._push_private_info_to_humans()
         return super().run_game()
+
+    def _push_private_info_to_humans(self):
+        """Push each human player's system prompt (role perspective) to their frontend."""
+        from Agents.Agent_Streamlit_Human import Agent_Streamlit_Human
+        for agent in self.agents:
+            if isinstance(agent, Agent_Streamlit_Human):
+                pid = agent.player_id
+                memory = self.agent_memories.get(pid, [])
+                if memory and memory[0]["role"] == "system":
+                    sys_prompt = memory[0]["content"]
+                    show_text = sys_prompt.split("[Game Environment]:")[1].split("[Faction Explanations]:")[0] + sys_prompt.split("[Visibility]:")[1].split("[Strategy]:")[0]
+                    self.shared_state.push_event(
+                        self.room_id,
+                        pid,
+                        "private_info",
+                        f"<b>👁️ 你的角色设定与视角：</b><br>"
+                        f"<pre style='white-space: pre-wrap; font-family: inherit;'>"
+                        f"{show_text}</pre>",
+                    )
